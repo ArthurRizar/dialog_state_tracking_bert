@@ -1,0 +1,12 @@
+*.pyc
+*.txt
+*.pb
+*.tf_record
+*.pbtxt
+*.index
+*.data-00000-of-00001
+*.meta
+*.weaver
+*.results
+*.tsv
+*.swp
