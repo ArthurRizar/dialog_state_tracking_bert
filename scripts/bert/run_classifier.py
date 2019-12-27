@@ -22,13 +22,11 @@ import collections
 import csv
 import os
 import shutil
-import tensorflow as tf
 import numpy as np
-# from loss import bi_tempered_logistic_loss
-
+import tensorflow as tf
 
 import modeling
-import optimization_finetuning as optimization
+import optimization
 import tokenization
 
 tf.enable_eager_execution()
@@ -98,7 +96,7 @@ flags.DEFINE_float(
         "Proportion of training to perform linear learning rate warmup for. "
         "E.g., 0.1 = 10% of training.")
 
-flags.DEFINE_integer("save_checkpoints_steps", 2000,
+flags.DEFINE_integer("save_checkpoints_steps", 1000,
                                          "How often to save the model checkpoint.")
 
 flags.DEFINE_integer("iterations_per_loop", 1000,
@@ -136,6 +134,7 @@ class InputExample(object):
 
     def __init__(self, guid, text_a, text_b=None, label=None):
         """Constructs a InputExample.
+
         Args:
             guid: Unique id for the example.
             text_a: string. The untokenized text of the first sequence. For single
@@ -153,10 +152,12 @@ class InputExample(object):
 
 class PaddingInputExample(object):
     """Fake example so the num input examples is a multiple of the batch size.
+
     When running eval/predict on the TPU, we need to pad the number of examples
     to be a multiple of the batch size, because the TPU requires a fixed batch
     size. The alternative is to drop the last batch, which is bad because it means
     the entire output data won't be generated.
+
     We use this class instead of `None` because treating `None` as padding
     battches could cause silent errors.
     """
@@ -291,7 +292,6 @@ def convert_single_dst_example(ex_index, example, label_list, max_seq_length,
     segment_ids.append(1)
 
     input_ids = tokenizer.convert_tokens_to_ids(tokens)
-
     # The mask has 1 for real tokens and 0 for padding tokens. Only real
     # tokens are attended to.
     input_mask = [1] * len(input_ids)
@@ -408,7 +408,7 @@ def convert_single_example(ex_index, example, label_list, max_seq_length,
     assert len(input_ids) == max_seq_length
     assert len(input_mask) == max_seq_length
     assert len(segment_ids) == max_seq_length
-
+    #print(example.label)
     label_id = label_map[example.label]
     if ex_index < 5:
         tf.logging.info("*** Example ***")
@@ -569,34 +569,22 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
             "output_bias", [num_labels], initializer=tf.zeros_initializer())
 
     with tf.variable_scope("loss"):
-        ln_type = bert_config.ln_type
-        if ln_type == 'preln': # add by brightmart, 10-06. if it is preln, we need to an additonal layer: layer normalization as suggested in paper "ON LAYER NORMALIZATION IN THE TRANSFORMER ARCHITECTURE"
-            print("ln_type is preln. add LN layer.")
-            output_layer=layer_norm(output_layer)
-        else:
-            print("ln_type is postln or other,do nothing.")
-
         if is_training:
             # I.e., 0.1 dropout
             output_layer = tf.nn.dropout(output_layer, keep_prob=0.9)
 
         logits = tf.matmul(output_layer, output_weights, transpose_b=True)
-        logits = tf.nn.bias_add(logits, output_bias, name='logits')
-        probabilities = tf.nn.softmax(logits, axis=-1, name='probs')
+        logits = tf.nn.bias_add(logits, output_bias)
+        probabilities = tf.nn.softmax(logits, axis=-1)
         log_probs = tf.nn.log_softmax(logits, axis=-1)
 
         one_hot_labels = tf.one_hot(labels, depth=num_labels, dtype=tf.float32)
 
-        per_example_loss = -tf.reduce_sum(one_hot_labels * log_probs, axis=-1) # todo 08-29 try temp-loss
-
+        per_example_loss = -tf.reduce_sum(one_hot_labels * log_probs, axis=-1)
         loss = tf.reduce_mean(per_example_loss)
 
         return (loss, per_example_loss, logits, probabilities)
 
-def layer_norm(input_tensor, name=None):
-    """Run layer normalization on the last dimension of the tensor."""
-    return tf.contrib.layers.layer_norm(
-            inputs=input_tensor, begin_norm_axis=-1, begin_params_axis=-1, scope=name)
 
 def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
                                          num_train_steps, num_warmup_steps, use_tpu,
@@ -615,15 +603,15 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
         segment_ids = features["segment_ids"]
         label_ids = features["label_ids"]
         is_real_example = None
+        print(input_ids)
+        print(input_mask)
+        print(segment_ids)
+        print(label_ids)
+        #exit()
         if "is_real_example" in features:
             is_real_example = tf.cast(features["is_real_example"], dtype=tf.float32)
         else:
             is_real_example = tf.ones(tf.shape(label_ids), dtype=tf.float32)
-
-        input_ids = tf.placeholder_with_default(input_ids, shape=[None, input_ids.shape[1]], name='input_ids')
-        input_mask = tf.placeholder_with_default(input_mask, shape=[None, input_mask.shape[1]], name='input_mask')
-        segment_ids = tf.placeholder_with_default(segment_ids, shape=[None, segment_ids.shape[1]], name='segment_ids')
-        
 
         is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
@@ -749,7 +737,6 @@ def input_fn_builder(features, seq_length, is_training, drop_remainder):
     return input_fn
 
 
-
 # This function is not used by this file but is still used by the Colab and
 # people who depend on it.
 def convert_examples_to_features(examples, label_list, max_seq_length,
@@ -794,8 +781,6 @@ def print_metrics(record_file, predictions, num_features, seq_length, candidate_
     metrics, _ = predict_metrics(label_ids, predictions, candidate_num)
     print(name + " set: MAP {} MRR {} Precision@1 {} Recall@1 {} Recall@2 {} Recall@5 {}".format(*metrics))
     return metrics
-
-
 
 
 def predict_metrics(labels, predictions, candidate_num=10):
@@ -845,7 +830,6 @@ def predict_metrics(labels, predictions, candidate_num=10):
                1. * sum_r1 / total_num, 1. * sum_r2 / total_num, 1. * sum_r5 / total_num]
 
     return metrics, scores
-
 
 def evaluation_one_session(data):
     """ evaluate for one session
@@ -972,7 +956,7 @@ def main(_):
     processor = processors[task_name]()
 
     label_list = processor.get_labels()
-    
+
     shutil.copy(FLAGS.vocab_file, FLAGS.output_dir)
     tokenizer = tokenization.FullTokenizer(
             vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
@@ -983,8 +967,6 @@ def main(_):
                 FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
     is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
-    # Cloud TPU: Invalid TPU configuration, ensure ClusterResolver is passed to tpu.
-    print("###tpu_cluster_resolver:",tpu_cluster_resolver)
     model_output_dir = os.path.join(FLAGS.output_dir, 'checkpoints')
     run_config = tf.contrib.tpu.RunConfig(
             cluster=tpu_cluster_resolver,
@@ -1000,9 +982,9 @@ def main(_):
     num_train_steps = None
     num_warmup_steps = None
     if FLAGS.do_train:
-        train_examples = processor.get_train_examples(FLAGS.data_dir) # TODO
-        print("###length of total train_examples:",len(train_examples))
-        num_train_steps = int(len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
+        train_examples = processor.get_train_examples(FLAGS.data_dir)
+        num_train_steps = int(
+                len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
         num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
     model_fn = model_fn_builder(
@@ -1079,29 +1061,12 @@ def main(_):
                 is_training=False,
                 drop_remainder=eval_drop_remainder)
 
-        #######################################################################################################################
-        # evaluate all checkpoints; you can use the checkpoint with the best dev accuarcy
-        steps_and_files = []
-        filenames = tf.gfile.ListDirectory(model_output_dir)
-        for filename in filenames:
-            if filename.endswith(".index"):
-                    ckpt_name = filename[:-6]
-                    cur_filename = os.path.join(model_output_dir, ckpt_name)
-                    global_step = int(cur_filename.split("-")[-1])
-                    tf.logging.info("Add {} to eval list.".format(cur_filename))
-                    steps_and_files.append([global_step, cur_filename])
-        steps_and_files = sorted(steps_and_files, key=lambda x: x[0])
-
         output_eval_file = os.path.join(FLAGS.output_dir, "eval_predict.results")
-        print("output_eval_file:", output_eval_file)
-        tf.logging.info("output_eval_file:" + output_eval_file)
         with tf.gfile.GFile(output_eval_file, "w") as writer:
-            for global_step, filename in sorted(steps_and_files, key=lambda x: x[0]):
-                result = estimator.predict(input_fn=eval_input_fn)
-                metrics = print_metrics(eval_file, result, num_actual_eval_examples, FLAGS.max_seq_length, candidate_num=2)
-                writer.write("valid set: MAP {} MRR {} Precision@1 {} Recall@1 {} Recall@2 {} Recall@5 {}\n".format(*metrics))
-
-
+            tf.logging.info("***** Eval results *****")
+            result = estimator.predict(input_fn=eval_input_fn)
+            metrics = print_metrics(eval_file, result, num_actual_eval_examples, FLAGS.max_seq_length, candidate_num=2)
+            writer.write("valid set: MAP {} MRR {} Precision@1 {} Recall@1 {} Recall@2 {} Recall@5 {}\n".format(*metrics))
 
     if FLAGS.do_predict:
         predict_examples = processor.get_test_examples(FLAGS.data_dir)

@@ -10,3 +10,7 @@
 *.results
 *.tsv
 *.swp
+*.log
+log
+checkpoint
+output
